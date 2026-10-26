@@ -88,7 +88,20 @@ final class WebGlShader extends Shader {
   @override
   final ShaderStage stage;
 
-  web.WebGLShader? _glShader;
+  // Compiled on first use (when a pipeline links it), not at bundle load:
+  // the base bundle holds ~80 shaders while a scene links a dozen, and each
+  // eager compile blocked on COMPILE_STATUS — seconds on budget Android GPUs.
+  web.WebGLShader? _compiledShader;
+  String? _pendingSource;
+
+  web.WebGLShader? get _glShader {
+    final source = _pendingSource;
+    if (source != null) {
+      _pendingSource = null;
+      _compiledShader = _compileNow(source);
+    }
+    return _compiledShader;
+  }
 
   // Bumped by every (re)compile; pipeline caches key on it so a hot-reloaded
   // shader links a fresh program while untouched shaders keep their cache.
@@ -141,6 +154,14 @@ final class WebGlShader extends Shader {
   /// inline factories) provide source that has been preprocessed if
   /// necessary.
   void _compile(String source) {
+    final previous = _compiledShader;
+    if (previous != null) _gpuContext._gl.deleteShader(previous);
+    _compiledShader = null;
+    _pendingSource = source;
+    _generation++;
+  }
+
+  web.WebGLShader _compileNow(String source) {
     final gl = _gpuContext._gl;
     final type = stage == ShaderStage.vertex
         ? web.WebGL2RenderingContext.VERTEX_SHADER
@@ -163,12 +184,6 @@ final class WebGlShader extends Shader {
         'Failed to compile ${stage.name} shader:\n$log\n--- source ---\n$source',
       );
     }
-    // On a hot-reload recompile, release the replaced shader object (linked
-    // programs keep their own copy of the code, so this only frees the
-    // standalone object).
-    final previous = _glShader;
-    if (previous != null) gl.deleteShader(previous);
-    _glShader = s;
-    _generation++;
+    return s;
   }
 }
