@@ -1,5 +1,39 @@
 part of '_webgl.dart';
 
+web.HTMLCanvasElement? _domCanvas;
+bool _contextCreated = false;
+ui.Image? _emptyImage;
+
+/// Shows rendered frames in a DOM `<canvas>` instead of copying them into
+/// Flutter's canvas, and returns that canvas for the app to place under the
+/// scene widget (for example through an `HtmlElementView`). The browser then
+/// composites the scene itself.
+///
+/// Worth it where the copy between WebGL contexts runs through the CPU:
+/// WebKit spends ~9 ms per megapixel on it, and hands the frame over
+/// unpremultiplied while CanvasKit treats it as premultiplied, so translucent
+/// pixels turn white.
+///
+/// Call before anything touches the GPU. Supports a single on-screen view:
+/// every `Texture.asImage()` presents into this canvas and returns an empty
+/// image for Flutter to draw.
+web.HTMLCanvasElement presentInDomCanvas() {
+  if (_domCanvas case final canvas?) return canvas;
+  if (_contextCreated) {
+    throw StateError(
+      'presentInDomCanvas() must run before the WebGL context is created.',
+    );
+  }
+  final canvas = web.HTMLCanvasElement();
+  // Fills the slot the app gives it; input stays with Flutter.
+  canvas.style
+    ..display = 'block'
+    ..width = '100%'
+    ..height = '100%'
+    ..pointerEvents = 'none';
+  return _domCanvas = canvas;
+}
+
 /// Global graphics context. Lazily creates a shared `OffscreenCanvas` +
 /// `WebGL2RenderingContext` the first time it's accessed; all resources
 /// (buffers, textures, pipelines) live in this context.
@@ -9,7 +43,9 @@ part of '_webgl.dart';
 /// platform-specific native wrapper.
 final class WebGlContext extends GpuContext {
   WebGlContext._createDefault() {
-    _canvas = web.OffscreenCanvas(1, 1);
+    _contextCreated = true;
+    _canvas =
+        _domCanvas?.transferControlToOffscreen() ?? web.OffscreenCanvas(1, 1);
     // antialias:false makes the default framebuffer single-sampled, so we
     // can blitFramebuffer single-sample render targets onto it for present.
     // preserveDrawingBuffer:true keeps the rendered contents available for
@@ -385,6 +421,7 @@ final class WebGlContext extends GpuContext {
   /// `Texture.asImage()` -> `canvas.drawImageRect` path needs.
   ui.Image snapshotTextureSync(Texture texture) {
     _blitTextureToCanvas(texture);
+    if (_domCanvas != null) return _emptyFrame();
     final bitmap = _canvas.transferToImageBitmap();
     final result = ui_web.createImageFromImageBitmap(bitmap as JSAny);
     if (result is ui.Image) return result;
@@ -401,6 +438,7 @@ final class WebGlContext extends GpuContext {
     bool transferOwnership = false,
   }) async {
     _blitTextureToCanvas(texture);
+    if (_domCanvas != null) return _emptyFrame();
     return ui_web.createImageFromTextureSource(
       _canvas as JSAny,
       width: texture.width,
@@ -412,6 +450,14 @@ final class WebGlContext extends GpuContext {
 
 /// The default graphics context. Lazily initialized.
 final WebGlContext webGlContext = WebGlContext._createDefault();
+
+/// What Flutter draws for a frame already shown in the DOM canvas.
+ui.Image _emptyFrame() {
+  if (_emptyImage case final image?) return image;
+  final recorder = ui.PictureRecorder();
+  ui.Canvas(recorder);
+  return _emptyImage = recorder.endRecording().toImageSync(1, 1);
+}
 
 /// Blit [texture]'s contents onto the GpuContext's `OffscreenCanvas` and
 /// return it as a `ui.Image` for display in a Flutter widget. Web-only;
