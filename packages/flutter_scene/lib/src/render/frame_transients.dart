@@ -189,15 +189,18 @@ abstract interface class FrameTransients implements TransientWriter {
 /// written while earlier draws reference it forces the browser to ghost
 /// (copy) it, which dominated per-draw cost before per-emplacement buffers
 /// were introduced. Every emplacement therefore gets its own small device
-/// buffer (sized to the next power-of-two class), written exactly once via
-/// `overwrite` before the view is returned and never touched again while in
-/// flight. Buffers recycle through a completion-gated pool per size class
-/// and are released after [kTransientIdleFrames] unused frames, the same
-/// policies as [TransientArena].
+/// buffer (sized to the next power-of-two class), written exactly once
+/// before the view is returned and never touched again while in flight.
+/// Buffers recycle through a completion-gated pool per size class and are
+/// released after [kTransientIdleFrames] unused frames, the same policies as
+/// [TransientArena].
 ///
-/// With [vertexData], buffers are geometry buffers, which the web backends
-/// create as typed vertex buffers whose uploads skip the staging mirror.
-/// The pool is then only for vertex-rate data, such as instance transforms.
+/// Buffers are geometry buffers, which the web backends create as typed
+/// buffers whose uploads skip the staging mirror, so a view over float
+/// storage reaches GL as floats rather than byte by byte under dart2wasm.
+/// Non-element ones keep a uniform buffer's tail padding, so uniform blocks
+/// bind from them too. With [vertexData] the pool is only for vertex-rate
+/// data, such as instance transforms.
 class ImmediatePoolTransients implements FrameTransients {
   ImmediatePoolTransients(this._tracker, {this.vertexData = false}) {
     _tracker.addBeforeSubmitListener(_onBeforeSubmit);
@@ -265,13 +268,14 @@ class ImmediatePoolTransients implements FrameTransients {
     _used.add(block);
 
     // Device-resident before the view is returned: the immediate backend
-    // consumes it as soon as the caller binds and draws.
-    final uploaded = vertexData
-        ? gpu.writeGeometryData(block.device, data, destinationOffsetInBytes: 0)
-        : block.device.overwrite(
-            data is ByteData ? data : ByteData.sublistView(data),
-          );
-    if (!uploaded) {
+    // consumes it as soon as the caller binds and draws. Written as geometry
+    // is, so a view over float storage reaches GL as floats: under dart2wasm
+    // the byte-wise copy `overwrite` makes of it is most of the frame.
+    if (!gpu.writeGeometryData(
+      block.device,
+      data,
+      destinationOffsetInBytes: 0,
+    )) {
       debugPrint(
         'ImmediatePoolTransients: failed to upload $length bytes to a '
         '$sizeClass-byte transient buffer.',
@@ -284,13 +288,11 @@ class ImmediatePoolTransients implements FrameTransients {
     );
   }
 
+  /// A single-role (vertex and uniform) buffer, written straight from the
+  /// caller's bytes with no staging mirror on web.
   gpu.DeviceBuffer _createBuffer(int length) {
     buffersCreated++;
-    if (vertexData) return gpu.createGeometryBuffers(length, 0).vertex;
-    return gpu.gpuContext.createDeviceBuffer(
-      gpu.StorageMode.hostVisible,
-      length,
-    );
+    return gpu.createGeometryBuffers(length, 0).vertex;
   }
 
   void _onBeforeSubmit(int id) {
