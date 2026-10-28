@@ -250,8 +250,14 @@ class ImmediatePoolTransients implements FrameTransients {
     _used.add(block);
 
     // Device-resident before the view is returned: the immediate backend
-    // consumes it as soon as the caller binds and draws.
-    if (!block.device.overwrite(bytes)) {
+    // consumes it as soon as the caller binds and draws. Written as geometry
+    // is, so a view over float storage reaches GL as floats: under dart2wasm
+    // the byte-wise copy `overwrite` makes of it is most of the frame.
+    if (!gpu.writeGeometryData(
+      block.device,
+      bytes,
+      destinationOffsetInBytes: 0,
+    )) {
       debugPrint(
         'ImmediatePoolTransients: failed to upload $length bytes to a '
         '$sizeClass-byte transient buffer.',
@@ -264,12 +270,11 @@ class ImmediatePoolTransients implements FrameTransients {
     );
   }
 
+  /// A single-role (vertex and uniform) buffer, written straight from the
+  /// caller's bytes with no staging mirror on web.
   static gpu.DeviceBuffer _createBuffer(int length) {
     buffersCreated++;
-    return gpu.gpuContext.createDeviceBuffer(
-      gpu.StorageMode.hostVisible,
-      length,
-    );
+    return gpu.createGeometryBuffers(length, 0).vertex;
   }
 
   void _onBeforeSubmit(int id) {

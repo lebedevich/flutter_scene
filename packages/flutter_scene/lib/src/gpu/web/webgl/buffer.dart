@@ -48,12 +48,15 @@ final class WebGlDeviceBuffer extends DeviceBuffer {
       throw StateError('Failed to create WebGL buffer');
     }
     _bindTypedForUpload(gl, target, buffer);
+    // Non-element buffers may be bound as uniforms (per-frame transients), so
+    // they get the same tail padding as a generic buffer's GL store.
+    final isElement = target == web.WebGL2RenderingContext.ELEMENT_ARRAY_BUFFER;
     gl.bufferData(
       target,
-      sizeInBytes.toJS,
+      (isElement ? sizeInBytes : sizeInBytes + _kUniformTailPaddingBytes).toJS,
       web.WebGL2RenderingContext.STATIC_DRAW,
     );
-    if (target == web.WebGL2RenderingContext.ELEMENT_ARRAY_BUFFER) {
+    if (isElement) {
       _glElementBuffer = buffer;
     } else {
       _glOtherBuffer = buffer;
@@ -255,15 +258,33 @@ final class WebGlDeviceBuffer extends DeviceBuffer {
   /// view in 90 ms to 340 ms, and the copy this falls back to in 45 ms. The
   /// copy is why a [ByteData] over float storage is not handed over as a byte
   /// view. `Geometry._uploadStreams` documents what each producer allocates.
+  ///
+  /// A [ByteData] over float storage (`ByteData.sublistView` of a
+  /// [Float32List], what uniform and instance data arrive as) crosses as a
+  /// float view of that storage, which is matched again.
   static JSObject _jsViewOf(TypedData source) => switch (source) {
     Float32List() => source.toJS,
     Uint16List() => source.toJS,
     Uint32List() => source.toJS,
     Uint8List() => source.toJS,
+    ByteData()
+        when source.runtimeType == _floatBackedByteData &&
+            source.offsetInBytes & 3 == 0 &&
+            source.lengthInBytes & 3 == 0 =>
+      source.buffer
+          .asFloat32List(source.offsetInBytes, source.lengthInBytes >> 2)
+          .toJS,
     _ => Uint8List.fromList(
       source.buffer.asUint8List(source.offsetInBytes, source.lengthInBytes),
     ).toJS,
   };
+
+  /// The runtime type of a byte view over float storage. Under dart2wasm it
+  /// differs from a byte view over byte storage; under dart2js every typed
+  /// list is a JS one and the two are the same type, where the float view is
+  /// free either way.
+  static final Type _floatBackedByteData = ByteData.sublistView(Float32List(0))
+      .runtimeType;
 
   /// On native this flushes host-coherent caches. WebGL2 has no equivalent;
   /// `bufferSubData` is immediately visible to the GL implementation.
