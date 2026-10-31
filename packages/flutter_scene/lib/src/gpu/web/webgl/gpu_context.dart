@@ -1,6 +1,7 @@
 part of '_webgl.dart';
 
 web.HTMLCanvasElement? _domCanvas;
+bool _domCanvasOffscreen = true;
 bool _contextCreated = false;
 ui.Image? _emptyImage;
 
@@ -14,10 +15,21 @@ ui.Image? _emptyImage;
 /// unpremultiplied while CanvasKit treats it as premultiplied, so translucent
 /// pixels turn white.
 ///
+/// Also worth it where Flutter rasterizes its whole frame on the main thread
+/// (Skwasm without cross-origin isolation): a scene drawn through Flutter
+/// makes every frame a Flutter frame, so the interface is rasterized again on
+/// each one even when nothing in it changed.
+///
+/// [offscreen] draws through `transferControlToOffscreen`. With `false` the
+/// WebGL context lives on the canvas itself and the page compositor shows its
+/// frames with the rest of the page. Blink needs `false`: frames committed
+/// through an offscreen canvas on the main thread are dropped once the GPU
+/// falls behind (a Redmi 7 showed 25 of 35 rendered frames per second).
+///
 /// Call before anything touches the GPU. Supports a single on-screen view:
 /// every `Texture.asImage()` presents into this canvas and returns an empty
 /// image for Flutter to draw.
-web.HTMLCanvasElement presentInDomCanvas() {
+web.HTMLCanvasElement presentInDomCanvas({bool offscreen = true}) {
   if (_domCanvas case final canvas?) return canvas;
   if (_contextCreated) {
     throw StateError(
@@ -31,6 +43,7 @@ web.HTMLCanvasElement presentInDomCanvas() {
     ..width = '100%'
     ..height = '100%'
     ..pointerEvents = 'none';
+  _domCanvasOffscreen = offscreen;
   return _domCanvas = canvas;
 }
 
@@ -44,8 +57,13 @@ web.HTMLCanvasElement presentInDomCanvas() {
 final class WebGlContext extends GpuContext {
   WebGlContext._createDefault() {
     _contextCreated = true;
-    _canvas =
-        _domCanvas?.transferControlToOffscreen() ?? web.OffscreenCanvas(1, 1);
+    _canvas = switch (_domCanvas) {
+      null => web.OffscreenCanvas(1, 1),
+      final dom when _domCanvasOffscreen => dom.transferControlToOffscreen(),
+      // Only width, height and getContext are used on a DOM canvas, and both
+      // canvas types have them.
+      final dom => (dom as JSObject) as web.OffscreenCanvas,
+    };
     // antialias:false makes the default framebuffer single-sampled, so we
     // can blitFramebuffer single-sample render targets onto it for present.
     // preserveDrawingBuffer:true keeps the rendered contents available for
