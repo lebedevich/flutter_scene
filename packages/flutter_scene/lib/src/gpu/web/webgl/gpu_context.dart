@@ -429,6 +429,11 @@ final class WebGlContext extends GpuContext {
     );
     _gl.bindFramebuffer(web.WebGL2RenderingContext.FRAMEBUFFER, null);
     _gl.deleteFramebuffer(readFbo);
+    // A page canvas otherwise holds its commands in the renderer until the
+    // compositor draws the frame, about 7 ms later and right when the display
+    // compositor submits its own frame (Redmi 7, Chrome). Flushing here gives
+    // the GPU that time: 1.3-3.7 more frames per second on the screen.
+    if (_domCanvas != null && !_domCanvasOffscreen) _gl.flush();
   }
 
   /// Synchronously snapshot [texture] into a `ui.Image`. Blits to the
