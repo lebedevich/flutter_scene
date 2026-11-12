@@ -154,6 +154,15 @@ Future<bool> measureMipSampling() async {
   );
   final vertexShader = baseShaderLibrary['FullscreenVertex']!;
   final fragmentShader = baseShaderLibrary['CopyFragment']!;
+  // The draw below is the probe pipeline's first, so on GLES it builds the
+  // program on the raster thread and blocks this one until it is done. At
+  // startup the raster thread can be busy for seconds on a slow device or a
+  // software-rendered emulator, and this thread is the platform's main
+  // thread: a Play pre-launch emulator reported the app not responding with
+  // it blocked in this draw. Wait for an idle raster thread without blocking
+  // (see [awaitRasterThread]), and longer than its default, since the probe
+  // only holds back the first frame.
+  await awaitRasterThread(timeout: const Duration(seconds: 10));
   final commandBuffer = gpu.gpuContext.createCommandBuffer();
   final renderPass = commandBuffer.createRenderPass(
     gpu.RenderTarget.singleColor(

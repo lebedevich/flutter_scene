@@ -433,10 +433,21 @@ gpu.RenderPipeline? cachedRenderPipeline(
 final Set<(gpu.Shader, gpu.Shader, int)> _rejectedPipelines = {};
 
 // A sliced warm-up's build budget: while set, new pipelines stop building
+// A sliced warm-up's build budget: while set, new pipelines stop building
 // once the slice has run this long, and the draws that need the rest are
 // skipped and counted, so the warm-up yields and tries them next slice. The
 // clock is wall time because a backend compiles a pipeline when a pass first
 // binds it, not when it is created.
+//
+// Draws are budgeted too. A backend builds its pipeline state for a pipeline
+// and a render pass configuration (target formats, sample count, blend,
+// depth, stencil, and cull state) inside the first draw that uses them
+// (`flutter::gpu::RenderPass::GetOrCreatePipeline`), and the calling thread
+// waits for it: hundreds of milliseconds per state on Metal with an empty
+// shader cache (a fresh install), and on GLES a round trip to the raster
+// thread. A pipeline already cached for another configuration (another sample
+// count, say) is never deferred, so once a slice has built something and run
+// past its budget every later draw is skipped (see [startBudgetedDraw]).
 Duration? _buildBudget;
 final Stopwatch _buildClock = Stopwatch();
 int _deferredBuilds = 0;
@@ -445,15 +456,34 @@ bool _builtThisSlice = false;
 // budget), so this one builds at least one pipeline.
 bool _starved = false;
 
+// A draw at least this slow built a pipeline state; reusing one takes
+// microseconds.
+const Duration _kStateBuildDraw = Duration(milliseconds: 1);
+final Stopwatch _drawClock = Stopwatch();
+int _drawOrdinal = 0;
+Set<int> _slowDraws = {};
+
 /// Runs [body] with new pipeline builds stopped once it has run for [budget];
 /// draws past it are skipped and counted in [deferredPipelineBuilds]. A slice
 /// after one that built nothing builds at least one.
+///
+/// [slowDraws] carries the slow draws between the slices of one warm-up, by
+/// their order in the frame (every slice encodes the same frame, so the order
+/// holds). A draw that is slow every time builds nothing after its first
+/// slice, so it counts as a build once; counting it in every slice would never
+/// let the warm-up finish.
 @internal
-T withPipelineBuildBudget<T>(Duration budget, T Function() body) {
+T withPipelineBuildBudget<T>(
+  Duration budget,
+  T Function() body, {
+  Set<int>? slowDraws,
+}) {
   _buildBudget = budget;
   _buildClock
     ..reset()
     ..start();
+  _drawOrdinal = 0;
+  _slowDraws = slowDraws ?? {};
   _deferredBuilds = 0;
   _builtThisSlice = false;
   try {
@@ -528,6 +558,34 @@ bool _deferBuild((gpu.Shader, gpu.Shader, int) key) {
   if (_starved && !_builtThisSlice) return false;
   _deferredBuilds++;
   return true;
+}
+
+/// Called before every draw: false when a sliced warm-up has built something
+/// and run past its budget, and the draw is skipped and counted in
+/// [deferredPipelineBuilds].
+@internal
+bool startBudgetedDraw() {
+  final budget = _buildBudget;
+  if (budget == null) return true;
+  if (_builtThisSlice && _buildClock.elapsed >= budget) {
+    _deferredBuilds++;
+    return false;
+  }
+  _drawClock
+    ..reset()
+    ..start();
+  return true;
+}
+
+/// Called after a draw [startBudgetedDraw] let through.
+@internal
+void endBudgetedDraw() {
+  if (_buildBudget == null) return;
+  _drawClock.stop();
+  if (_drawClock.elapsed >= _kStateBuildDraw && _slowDraws.add(_drawOrdinal)) {
+    _builtThisSlice = true;
+  }
+  _drawOrdinal++;
 }
 
 /// Pipelines currently held in the process-wide cache.
