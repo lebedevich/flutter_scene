@@ -2027,11 +2027,16 @@ base class Scene implements SceneGraph {
   ///
   /// With [sliceBudget], the warm-up builds new pipelines for at most that
   /// long per offscreen frame, skips the draws that still need one, and
-  /// yields to the event loop before the next, until nothing is left. A slow
+  /// yields to the event loop before the next, until nothing is left. The
+  /// budget counts the backend's pipeline state builds too, which happen
+  /// inside the first draw of a pipeline in a new render pass configuration,
+  /// so a slice holds at most one of those past it. After each slice the
+  /// warm-up rests for at least a quarter of the time the slice took. A slow
   /// device then keeps answering input and animating its loading screen
   /// instead of blocking for the whole compile (Android declares an app
-  /// that ignores input for ten seconds not responding). A single build
-  /// longer than the budget still runs whole.
+  /// that ignores input for five seconds not responding, and iOS hang
+  /// reporters flag two seconds with barely a frame). A single build longer
+  /// than the budget still runs whole.
   ///
   /// Lit materials draw with a lean shader while the scene uses none of the
   /// features it leaves out (ambient occlusion, rect area lights, the
@@ -2106,14 +2111,26 @@ base class Scene implements SceneGraph {
     // and skips nothing, or after a generous cap if something never finishes
     // building. A view paced by GPU backpressure re-presents its last image
     // and resolves no pipelines, so it proves nothing.
+    final slowDraws = <int>{};
+    final sliceClock = Stopwatch();
     for (var slice = 0; slice < 1000; slice++) {
       // Each slice compiles pipelines after a yield, so rendezvous again.
       if (slice > 0) await awaitRasterThread();
       if (_disposed) return;
       final paced = _pacedFrameCount;
-      withPipelineBuildBudget(sliceBudget, encode);
+      sliceClock
+        ..reset()
+        ..start();
+      withPipelineBuildBudget(sliceBudget, encode, slowDraws: slowDraws);
       if (_pacedFrameCount == paced && deferredPipelineBuilds == 0) return;
-      await Future<void>.delayed(const Duration(milliseconds: 16));
+      // A quarter of the slice's time, so the thread is free for a fifth of
+      // any stretch of slices however long their builds take.
+      final rest = sliceClock.elapsed ~/ 4;
+      await Future<void>.delayed(
+        rest > const Duration(milliseconds: 16)
+            ? rest
+            : const Duration(milliseconds: 16),
+      );
     }
   }
 
