@@ -2031,7 +2031,8 @@ base class Scene implements SceneGraph {
   /// budget counts the backend's pipeline state builds too, which happen
   /// inside the first draw of a pipeline in a new render pass configuration,
   /// so a slice holds at most one of those past it. After each slice the
-  /// warm-up rests for at least a quarter of the time the slice took. A slow
+  /// warm-up waits until the thread has been free for a quarter of the time
+  /// the slice took. A slow
   /// device then keeps answering input and animating its loading screen
   /// instead of blocking for the whole compile (Android declares an app
   /// that ignores input for five seconds not responding, and iOS hang
@@ -2123,10 +2124,11 @@ base class Scene implements SceneGraph {
         ..start();
       withPipelineBuildBudget(sliceBudget, encode, slowDraws: slowDraws);
       if (_pacedFrameCount == paced && deferredPipelineBuilds == 0) return;
-      // A quarter of the slice's time, so the thread is free for a fifth of
-      // any stretch of slices however long their builds take.
+      // A quarter of the slice's time (at least 16 ms) of free thread time,
+      // so the thread is free for a fifth of any stretch of slices however
+      // long their builds take and whatever else runs on it.
       final rest = sliceClock.elapsed ~/ 4;
-      await Future<void>.delayed(
+      await restUntilFree(
         rest > const Duration(milliseconds: 16)
             ? rest
             : const Duration(milliseconds: 16),
