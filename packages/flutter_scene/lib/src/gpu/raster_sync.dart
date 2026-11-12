@@ -57,6 +57,27 @@ Future<void> awaitRasterThread({
   return completer.future.timeout(timeout, onTimeout: () {});
 }
 
+/// Waits until this thread has been free for [free] in all, counting only the
+/// time no other work held it, and for at most four times [free].
+///
+/// A fixed pause between chunks of blocking work keeps a thread responsive
+/// only when nothing else lands in it. Measured on an iPhone 15 Pro, app
+/// start-up work filled the pauses of a sliced warm-up, so the slices still
+/// ran back to back. An 8 ms timer that fires on time means the thread was
+/// free for that tick; a late one means something else ran. The cap keeps a
+/// thread that never frees up from waiting forever.
+Future<void> restUntilFree(Duration free) async {
+  const tick = Duration(milliseconds: 8);
+  final clock = Stopwatch()..start();
+  var rested = Duration.zero;
+  while (rested < free && clock.elapsed < free * 4) {
+    final start = clock.elapsed;
+    await Future<void>.delayed(tick);
+    final took = clock.elapsed - start;
+    if (took < tick * 2) rested += took;
+  }
+}
+
 /// Paces a producer against presented frames.
 ///
 /// One pacer per producer (one radiance fill), because the degradation below
