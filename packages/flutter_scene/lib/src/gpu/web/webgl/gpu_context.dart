@@ -591,12 +591,13 @@ final class WebGlContext extends GpuContext {
 /// The default graphics context. Lazily initialized.
 final WebGlContext webGlContext = WebGlContext._createDefault();
 
-/// What Flutter draws for a frame already shown in the DOM canvas.
+/// What Flutter draws for a frame already shown in the DOM canvas. A handle of
+/// its own each time: the scene disposes the images it presented.
 ui.Image _emptyFrame() {
-  if (_emptyImage case final image?) return image;
+  if (_emptyImage case final image?) return image.clone();
   final recorder = ui.PictureRecorder();
   ui.Canvas(recorder);
-  return _emptyImage = recorder.endRecording().toImageSync(1, 1);
+  return (_emptyImage = recorder.endRecording().toImageSync(1, 1)).clone();
 }
 
 /// Blit [texture]'s contents onto the GpuContext's `OffscreenCanvas` and
